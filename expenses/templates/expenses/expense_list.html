@@ -1,0 +1,131 @@
+{% extends 'base.html' %}
+{% load expense_extras %}
+
+{% block title %}Expenses{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>Expenses</h1>
+        <p class="subtitle">Search, filter and manage your expenses</p>
+    </div>
+    <a class="btn btn-primary" href="{% url 'expense_create' %}">+ Add Expense</a>
+</div>
+
+{# method="get" puts the filters in the URL, so filtered pages can be refreshed or shared #}
+<form class="card filter-form" method="get" action="{% url 'expense_list' %}">
+    <div class="filter-field filter-search">
+        <label for="search">Search</label>
+        <input type="search" id="search" name="search" value="{{ search }}" placeholder="Title or description">
+    </div>
+    <div class="filter-field">
+        <label for="category">Category</label>
+        <select id="category" name="category" data-auto-submit>
+            <option value="">All Categories</option>
+            {% for value, label in categories %}
+                <option value="{{ value }}"{% if value == selected_category %} selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+        </select>
+    </div>
+    <div class="filter-field">
+        <label for="month">Month</label>
+        <select id="month" name="month" data-auto-submit>
+            <option value="">All Months</option>
+            {% for value, label in month_choices %}
+                <option value="{{ value }}"{% if value == selected_month %} selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+        </select>
+    </div>
+    <div class="filter-actions">
+        <button type="submit" class="btn btn-primary">Search</button>
+        {% if is_filtered %}
+            <a class="btn btn-light" href="{% url 'expense_list' %}">Clear</a>
+        {% endif %}
+    </div>
+</form>
+
+<div class="results-summary">
+    <span>
+        {{ result_count }} expense{{ result_count|pluralize }}{% if is_filtered %} match your filters{% endif %}
+    </span>
+    <span>
+        {% if is_filtered %}Filtered total{% else %}Total{% endif %}:
+        <strong>{{ filtered_total|inr }}</strong>
+    </span>
+</div>
+
+{% if page_obj.object_list %}
+    <div class="card card-flush">
+        <div class="table-wrap">
+            <table class="table table-expenses">
+                <thead>
+                    <tr>
+                        <th>Title</th>
+                        <th class="text-right">Amount</th>
+                        <th>Category</th>
+                        <th>Date</th>
+                        <th>Description</th>
+                        <th>Created</th>
+                        <th class="text-right">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for expense in page_obj %}
+                        <tr>
+                            <td data-label="Title"><a href="{% url 'expense_detail' expense.pk %}" class="expense-title">{{ expense.title }}</a></td>
+                            <td data-label="Amount" class="text-right amount">{{ expense.amount|inr }}</td>
+                            <td data-label="Category">{% include 'expenses/includes/category_badge.html' with category=expense.category label=expense.get_category_display %}</td>
+                            <td data-label="Date">{{ expense.date|date:"d-m-Y" }}</td>
+                            <td data-label="Description" class="muted">{{ expense.description|default:"—"|truncatechars:40 }}</td>
+                            <td data-label="Created" class="muted">{{ expense.created_at|date:"d-m-Y" }}</td>
+                            <td data-label="Actions" class="text-right">
+                                <div class="actions">
+                                    <a class="btn btn-sm btn-light" href="{% url 'expense_detail' expense.pk %}">View</a>
+                                    <a class="btn btn-sm btn-secondary" href="{% url 'expense_update' expense.pk %}">Edit</a>
+                                    <a class="btn btn-sm btn-danger-outline" href="{% url 'expense_delete' expense.pk %}">Delete</a>
+                                </div>
+                            </td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    {% if page_obj.has_other_pages %}
+        <nav class="pagination" aria-label="Pagination">
+            {% if page_obj.has_previous %}
+                <a href="?{% if querystring %}{{ querystring }}&{% endif %}page={{ page_obj.previous_page_number }}">&laquo; Previous</a>
+            {% else %}
+                <span class="disabled">&laquo; Previous</span>
+            {% endif %}
+
+            {% for number in page_range %}
+                {% if number == ellipsis %}
+                    <span class="ellipsis">{{ number }}</span>
+                {% elif number == page_obj.number %}
+                    <span class="current" aria-current="page">{{ number }}</span>
+                {% else %}
+                    <a href="?{% if querystring %}{{ querystring }}&{% endif %}page={{ number }}">{{ number }}</a>
+                {% endif %}
+            {% endfor %}
+
+            {% if page_obj.has_next %}
+                <a href="?{% if querystring %}{{ querystring }}&{% endif %}page={{ page_obj.next_page_number }}">Next &raquo;</a>
+            {% else %}
+                <span class="disabled">Next &raquo;</span>
+            {% endif %}
+        </nav>
+    {% endif %}
+{% else %}
+    <div class="card empty-state">
+        {% if is_filtered %}
+            <p>No expenses match your search or filters.</p>
+            <a class="btn btn-light" href="{% url 'expense_list' %}">Clear filters</a>
+        {% else %}
+            <p>You haven't added any expenses yet.</p>
+            <a class="btn btn-primary" href="{% url 'expense_create' %}">Add your first expense</a>
+        {% endif %}
+    </div>
+{% endif %}
+{% endblock %}

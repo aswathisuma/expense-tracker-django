@@ -1,0 +1,19 @@
+{% extends 'base.html' %}
+
+{% block title %}Delete {{ expense.title }}{% endblock %}
+
+{% block content %}
+<div class="card detail-card delete-card">
+    <h1>Delete Expense</h1>
+    <p class="warning-text">Are you sure you want to delete <strong>"{{ expense.title }}"</strong>? This cannot be undone.</p>
+
+    {% include 'expenses/includes/expense_facts.html' %}
+
+    {# The delete itself happens on POST, protected by the CSRF token #}
+    <form method="post" class="form-actions">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-danger">Confirm Delete</button>
+        <a class="btn btn-light" href="{% url 'expense_list' %}">Cancel</a>
+    </form>
+</div>
+{% endblock %}

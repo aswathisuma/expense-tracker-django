@@ -38,7 +38,7 @@ npm run dev
 
 Open http://localhost:5173/ for the app. The React dev server forwards every `/api` request to Django on port 8000, so both must be running.
 
-Django Admin is at http://127.0.0.1:8000/admin/. The API answers in JSON only and has no index page, so `/` and `/api/` return "Not found"; try http://127.0.0.1:8000/api/data/ to see it working.
+Django Admin is at http://127.0.0.1:8000/admin/. The bare address `/` goes there too. The API answers in JSON only and has no index page, so `/api/` returns "Not found"; try http://127.0.0.1:8000/api/data/ to see it working.
 
 Other useful commands:
 

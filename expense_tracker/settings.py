@@ -49,7 +49,7 @@ ROOT_URLCONF = 'expense_tracker.urls'
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        # Only Django Admin and the browsable API use templates; the UI is the React app
+        # Only Django Admin uses templates; the UI is the React app
         'DIRS': [],
         'APP_DIRS': True,
         'OPTIONS': {
@@ -101,6 +101,8 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # The API has no login yet: anyone who can reach the server can read and change the data.
 # That is fine on your own machine, but add authentication before deploying it.
 REST_FRAMEWORK = {
+    # JSON only: no web pages for browsing the API
+    'DEFAULT_RENDERER_CLASSES': ['rest_framework.renderers.JSONRenderer'],
     'DEFAULT_AUTHENTICATION_CLASSES': [],
     'DEFAULT_PERMISSION_CLASSES': ['rest_framework.permissions.AllowAny'],
 }

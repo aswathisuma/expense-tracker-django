@@ -1,10 +1,11 @@
 from django.urls import include, path
-from rest_framework.routers import DefaultRouter
+from rest_framework.routers import SimpleRouter
 
 from . import views
 
 # The router builds the list and detail URLs for each ViewSet.
-router = DefaultRouter()
+# SimpleRouter (unlike DefaultRouter) adds no index page listing the API at /api/.
+router = SimpleRouter()
 router.register('transactions', views.TransactionViewSet)
 router.register('categories', views.CategoryViewSet)
 

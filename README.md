@@ -2,7 +2,7 @@
 
 The backend for the React app in `expense-tracker-react-app`. It stores transactions, categories and budgets in SQLite and serves them as JSON with Django REST Framework. It's designed to help you learn Django models, the ORM, serializers and REST APIs.
 
-**Features:** create/read/update/delete for transactions and categories, monthly and per-category budgets, server-side validation, safe category deletion (transactions are moved first), sample data, Django Admin, and a browsable API.
+**Features:** create/read/update/delete for transactions and categories, monthly and per-category budgets, server-side validation, safe category deletion (transactions are moved first), sample data, and Django Admin.
 
 There are no HTML pages here any more: the React app is the user interface.
 
@@ -38,7 +38,7 @@ npm run dev
 
 Open http://localhost:5173/ for the app. The React dev server forwards every `/api` request to Django on port 8000, so both must be running.
 
-Open http://127.0.0.1:8000/api/ to explore the API in the browser, and http://127.0.0.1:8000/admin/ for Django Admin.
+Django Admin is at http://127.0.0.1:8000/admin/. The API answers in JSON only and has no index page, so `/` and `/api/` return "Not found"; try http://127.0.0.1:8000/api/data/ to see it working.
 
 Other useful commands:
 
@@ -135,7 +135,7 @@ A serializer does for an API what a `ModelForm` does for an HTML page: it turns 
 
 ### 4. Views and URLs
 
-- `TransactionViewSet` and `CategoryViewSet` are `ModelViewSet`s: one class gives list, create, detail, update and delete. The `DefaultRouter` in `urls.py` builds their URLs.
+- `TransactionViewSet` and `CategoryViewSet` are `ModelViewSet`s: one class gives list, create, detail, update and delete. The `SimpleRouter` in `urls.py` builds their URLs.
 - `CategoryViewSet.destroy()` is overridden to move a category's transactions to the replacement before deleting it, inside `transaction.atomic()` so it either all happens or none of it does.
 - `budgets`, `app_data` and `sample_data` are small function views using `@api_view`.
 

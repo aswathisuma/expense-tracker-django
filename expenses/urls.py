@@ -1,12 +1,16 @@
-from django.urls import path
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
 
 from . import views
 
+# The router builds the list and detail URLs for each ViewSet.
+router = DefaultRouter()
+router.register('transactions', views.TransactionViewSet)
+router.register('categories', views.CategoryViewSet)
+
 urlpatterns = [
-    path('', views.dashboard, name='dashboard'),
-    path('expenses/', views.expense_list, name='expense_list'),
-    path('expenses/add/', views.expense_create, name='expense_create'),
-    path('expenses/<int:pk>/', views.expense_detail, name='expense_detail'),
-    path('expenses/<int:pk>/edit/', views.expense_update, name='expense_update'),
-    path('expenses/<int:pk>/delete/', views.expense_delete, name='expense_delete'),
+    path('budgets/', views.budgets, name='budgets'),
+    path('data/', views.app_data, name='app_data'),
+    path('data/sample/', views.sample_data, name='sample_data'),
+    path('', include(router.urls)),
 ]

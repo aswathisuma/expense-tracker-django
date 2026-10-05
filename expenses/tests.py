@@ -1,203 +1,312 @@
-from datetime import date, timedelta
+from datetime import date
 from decimal import Decimal
+from io import StringIO
 
-from django.test import TestCase
+from django.core.management import call_command
 from django.urls import reverse
 from django.utils import timezone
+from rest_framework import status
+from rest_framework.test import APITestCase
 
-from .forms import ExpenseForm
-from .models import Expense
-from .templatetags.expense_extras import format_inr
+from .app_data import DEFAULT_CATEGORIES, get_recent_months
+from .models import Budget, Category, Transaction
+
+# The default categories are created by a migration, so they exist in every test.
 
 
-def make_expense(**kwargs):
+def make_transaction(**kwargs):
     data = {
-        'title': 'Lunch',
+        'type': 'expense',
         'amount': Decimal('250'),
-        'category': Expense.Category.FOOD,
+        'category': Category.objects.get(name='Food'),
         'date': date(2026, 9, 24),
-        'description': '',
+        'payment_method': 'UPI',
+        'description': 'Lunch',
     }
     data.update(kwargs)
-    return Expense.objects.create(**data)
+    return Transaction.objects.create(**data)
 
 
-class FormatInrTests(TestCase):
-    def test_formats_with_indian_grouping(self):
-        self.assertEqual(format_inr(0), '₹0.00')
-        self.assertEqual(format_inr(100), '₹100.00')
-        self.assertEqual(format_inr(Decimal('1250')), '₹1,250.00')
-        self.assertEqual(format_inr(Decimal('25450.5')), '₹25,450.50')
-        self.assertEqual(format_inr(Decimal('1234567.89')), '₹12,34,567.89')
-        self.assertEqual(format_inr(None), '₹0.00')
+def transaction_payload(**overrides):
+    data = {
+        'type': 'expense',
+        'amount': 250,
+        'category': 'Food',
+        'date': '2026-09-24',
+        'paymentMethod': 'UPI',
+        'description': 'Lunch',
+    }
+    data.update(overrides)
+    return data
 
 
-class ExpenseFormTests(TestCase):
-    def valid_data(self, **overrides):
-        data = {
-            'title': 'Lunch',
-            'amount': '250',
-            'category': 'Food',
-            'date': '2026-09-24',
-            'description': '',
+class TransactionApiTests(APITestCase):
+    def test_list_is_newest_first_in_the_react_shape(self):
+        make_transaction(date=date(2026, 9, 1), description='Older')
+        newer = make_transaction(date=date(2026, 9, 24), amount=Decimal('99.50'), description='Newer')
+
+        response = self.client.get(reverse('transaction-list'))
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        rows = response.json()
+        self.assertEqual([row['description'] for row in rows], ['Newer', 'Older'])
+        self.assertEqual(
+            set(rows[0]),
+            {'id', 'type', 'amount', 'category', 'date', 'paymentMethod', 'description', 'createdAt'},
+        )
+        self.assertEqual(rows[0]['id'], newer.pk)
+        self.assertEqual(rows[0]['amount'], 99.5)  # a JSON number, not the string "99.50"
+        self.assertEqual(rows[0]['category'], 'Food')
+        self.assertTrue(rows[0]['createdAt'].endswith('Z'))
+
+    def test_create_keeps_the_id_sent_by_the_client(self):
+        response = self.client.post(
+            reverse('transaction-list'),
+            transaction_payload(id='11111111-2222-3333-4444-555555555555'),
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        saved = Transaction.objects.get(pk='11111111-2222-3333-4444-555555555555')
+        self.assertEqual(saved.amount, Decimal('250'))
+        self.assertEqual(saved.category.name, 'Food')
+        self.assertEqual(saved.payment_method, 'UPI')
+
+    def test_create_without_id_generates_one(self):
+        response = self.client.post(reverse('transaction-list'), transaction_payload(), format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(response.json()['id'])
+
+    def test_create_rejects_a_duplicate_id(self):
+        existing = make_transaction()
+        response = self.client.post(
+            reverse('transaction-list'), transaction_payload(id=existing.pk), format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('id', response.json())
+
+    def test_create_validation(self):
+        invalid_payloads = {
+            'amount': transaction_payload(amount=0),
+            'category': transaction_payload(category='Rent'),
+            'paymentMethod': transaction_payload(paymentMethod='Cheque'),
+            'type': transaction_payload(type='transfer'),
+            'description': transaction_payload(description='x' * 101),
+            'date': transaction_payload(date='24-09-2026'),
         }
-        data.update(overrides)
-        return data
+        for field, payload in invalid_payloads.items():
+            with self.subTest(field=field):
+                response = self.client.post(reverse('transaction-list'), payload, format='json')
+                self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+                self.assertIn(field, response.json())
+        self.assertEqual(Transaction.objects.count(), 0)
 
-    def test_valid_form(self):
-        self.assertTrue(ExpenseForm(data=self.valid_data()).is_valid())
+    def test_category_must_allow_the_transaction_type(self):
+        response = self.client.post(
+            reverse('transaction-list'), transaction_payload(type='income', category='Food'), format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('category', response.json())
 
-    def test_amount_must_be_greater_than_zero(self):
-        for amount in ('0', '-5'):
-            form = ExpenseForm(data=self.valid_data(amount=amount))
-            self.assertFalse(form.is_valid())
-            self.assertIn('Amount must be greater than 0.', form.errors['amount'])
+        # "Other" is a "both" category, so it accepts income
+        response = self.client.post(
+            reverse('transaction-list'), transaction_payload(type='income', category='Other'), format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
 
-    def test_required_fields(self):
-        form = ExpenseForm(data={'description': 'only a description'})
-        self.assertFalse(form.is_valid())
-        for field in ('title', 'amount', 'category', 'date'):
-            self.assertIn(field, form.errors)
-        self.assertNotIn('description', form.errors)
+    def test_update_cannot_change_the_id(self):
+        transaction = make_transaction()
+        response = self.client.put(
+            reverse('transaction-detail', args=[transaction.pk]),
+            transaction_payload(id='something-else', amount=600.75, category='Travel'),
+            format='json',
+        )
 
-    def test_invalid_category(self):
-        form = ExpenseForm(data=self.valid_data(category='Rent'))
-        self.assertFalse(form.is_valid())
-        self.assertIn('category', form.errors)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        transaction.refresh_from_db()
+        self.assertEqual(transaction.amount, Decimal('600.75'))
+        self.assertEqual(transaction.category.name, 'Travel')
+        self.assertFalse(Transaction.objects.filter(pk='something-else').exists())
 
+    def test_delete(self):
+        transaction = make_transaction()
+        response = self.client.delete(reverse('transaction-detail', args=[transaction.pk]))
 
-class ExpenseCrudTests(TestCase):
-    def test_create_expense(self):
-        response = self.client.post(reverse('expense_create'), {
-            'title': 'Petrol',
-            'amount': '1500',
-            'category': 'Travel',
-            'date': '2026-09-23',
-            'description': 'Full tank',
-        }, follow=True)
-        self.assertRedirects(response, reverse('expense_list'))
-        self.assertEqual(Expense.objects.count(), 1)
-        self.assertContains(response, 'was added successfully')
-
-    def test_create_invalid_shows_errors(self):
-        response = self.client.post(reverse('expense_create'), {'title': '', 'amount': '0'})
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(Expense.objects.count(), 0)
-        self.assertContains(response, 'Amount must be greater than 0.')
-        self.assertContains(response, 'Please correct the errors below.')
-
-    def test_detail_page(self):
-        expense = make_expense(description='With friends')
-        response = self.client.get(reverse('expense_detail', args=[expense.pk]))
-        self.assertContains(response, 'With friends')
-        self.assertContains(response, '₹250.00')
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(Transaction.objects.exists())
 
     def test_detail_404(self):
-        response = self.client.get(reverse('expense_detail', args=[999]))
-        self.assertEqual(response.status_code, 404)
-
-    def test_update_expense(self):
-        expense = make_expense()
-        edit_url = reverse('expense_update', args=[expense.pk])
-
-        response = self.client.get(edit_url)
-        self.assertContains(response, 'value="Lunch"')
-
-        response = self.client.post(edit_url, {
-            'title': 'Team lunch',
-            'amount': '600',
-            'category': 'Food',
-            'date': '2026-09-24',
-            'description': '',
-        })
-        self.assertRedirects(response, reverse('expense_list'))
-        expense.refresh_from_db()
-        self.assertEqual(expense.title, 'Team lunch')
-        self.assertEqual(expense.amount, Decimal('600'))
-
-    def test_delete_get_only_shows_confirmation(self):
-        expense = make_expense()
-        response = self.client.get(reverse('expense_delete', args=[expense.pk]))
-        self.assertContains(response, 'Confirm Delete')
-        self.assertTrue(Expense.objects.filter(pk=expense.pk).exists())
-
-    def test_delete_post_removes_expense(self):
-        expense = make_expense()
-        response = self.client.post(reverse('expense_delete', args=[expense.pk]), follow=True)
-        self.assertRedirects(response, reverse('expense_list'))
-        self.assertFalse(Expense.objects.filter(pk=expense.pk).exists())
-        self.assertContains(response, 'was deleted successfully')
+        response = self.client.get(reverse('transaction-detail', args=['missing']))
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
 
-class ExpenseListFilterTests(TestCase):
-    def setUp(self):
-        make_expense(title='Lunch', amount=Decimal('250'), category='Food', date=date(2026, 9, 24))
-        make_expense(title='Dinner', amount=Decimal('800'), category='Food', date=date(2026, 8, 10),
-                     description='lunch leftovers')
-        make_expense(title='Petrol', amount=Decimal('1500'), category='Travel', date=date(2026, 9, 23))
+class CategoryApiTests(APITestCase):
+    def test_list_returns_the_defaults_in_order(self):
+        response = self.client.get(reverse('category-list'))
 
-    def get_titles(self, params):
-        response = self.client.get(reverse('expense_list'), params)
-        return response, {expense.title for expense in response.context['page_obj']}
+        self.assertEqual(
+            [(row['id'], row['name'], row['type']) for row in response.json()],
+            DEFAULT_CATEGORIES,
+        )
 
-    def test_search_title_and_description(self):
-        _, titles = self.get_titles({'search': 'LUNCH'})
-        self.assertEqual(titles, {'Lunch', 'Dinner'})
+    def test_create_is_added_at_the_end(self):
+        response = self.client.post(
+            reverse('category-list'), {'id': 'cat-rent', 'name': '  Rent ', 'type': 'expense'}, format='json',
+        )
 
-    def test_category_filter(self):
-        _, titles = self.get_titles({'category': 'Travel'})
-        self.assertEqual(titles, {'Petrol'})
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.json(), {'id': 'cat-rent', 'name': 'Rent', 'type': 'expense'})
+        self.assertEqual(Category.objects.last().name, 'Rent')
 
-    def test_month_filter(self):
-        _, titles = self.get_titles({'month': '2026-09'})
-        self.assertEqual(titles, {'Lunch', 'Petrol'})
+    def test_name_must_be_unique_ignoring_case(self):
+        response = self.client.post(reverse('category-list'), {'name': 'food', 'type': 'expense'}, format='json')
 
-    def test_combined_filters_and_filtered_total(self):
-        response, titles = self.get_titles({'search': 'lunch', 'category': 'Food', 'month': '2026-09'})
-        self.assertEqual(titles, {'Lunch'})
-        self.assertEqual(response.context['filtered_total'], Decimal('250'))
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('name', response.json())
 
-    def test_invalid_filters_are_ignored(self):
-        response, titles = self.get_titles({'category': 'Nope', 'month': 'bad'})
-        self.assertEqual(len(titles), 3)
-        self.assertFalse(response.context['is_filtered'])
+    def test_rename_is_seen_by_its_transactions(self):
+        transaction = make_transaction()
+        response = self.client.put(
+            reverse('category-detail', args=['cat-food']), {'name': 'Meals', 'type': 'expense'}, format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        detail = self.client.get(reverse('transaction-detail', args=[transaction.pk])).json()
+        self.assertEqual(detail['category'], 'Meals')
+
+    def test_type_must_keep_allowing_existing_transactions(self):
+        make_transaction()
+        url = reverse('category-detail', args=['cat-food'])
+
+        response = self.client.put(url, {'name': 'Food', 'type': 'income'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('type', response.json())
+
+        response = self.client.put(url, {'name': 'Food', 'type': 'both'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_delete_unused_category(self):
+        response = self.client.delete(reverse('category-detail', args=['cat-education']))
+
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(Category.objects.filter(pk='cat-education').exists())
+
+    def test_delete_used_category_needs_a_replacement(self):
+        transaction = make_transaction()
+        url = reverse('category-detail', args=['cat-food'])
+
+        response = self.client.delete(url)
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+
+        for bad_replacement in ('Nope', 'Food', 'Salary'):  # unknown, itself, income-only
+            response = self.client.delete(f'{url}?replacement={bad_replacement}')
+            self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertTrue(Category.objects.filter(pk='cat-food').exists())
+
+        response = self.client.delete(f'{url}?replacement=Other')
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        transaction.refresh_from_db()
+        self.assertEqual(transaction.category.name, 'Other')
+        self.assertFalse(Category.objects.filter(pk='cat-food').exists())
 
 
-class PaginationTests(TestCase):
-    def setUp(self):
-        for day in range(1, 26):
-            make_expense(title=f'Item {day}', date=date(2026, 9, day))
+class BudgetApiTests(APITestCase):
+    def test_empty_budgets(self):
+        response = self.client.get(reverse('budgets'))
+        self.assertEqual(response.json(), {'monthlyLimit': 0, 'categoryLimits': {}})
 
-    def test_ten_per_page(self):
-        response = self.client.get(reverse('expense_list'))
-        self.assertEqual(len(response.context['page_obj']), 10)
-        self.assertEqual(response.context['page_obj'].paginator.num_pages, 3)
+    def test_patch_changes_only_what_is_sent(self):
+        url = reverse('budgets')
 
-    def test_pagination_keeps_filters(self):
-        response = self.client.get(reverse('expense_list'), {'category': 'Food', 'page': 2})
-        self.assertEqual(response.context['page_obj'].number, 2)
-        self.assertContains(response, 'href="?category=Food&page=3"')
+        response = self.client.patch(url, {'monthlyLimit': 40000}, format='json')
+        self.assertEqual(response.json(), {'monthlyLimit': 40000, 'categoryLimits': {}})
+
+        response = self.client.patch(
+            url, {'categoryLimits': {'cat-food': 6000, 'cat-travel': 4500.5}}, format='json',
+        )
+        self.assertEqual(
+            response.json(),
+            {'monthlyLimit': 40000, 'categoryLimits': {'cat-food': 6000, 'cat-travel': 4500.5}},
+        )
+
+        # 0 removes a category's budget
+        response = self.client.patch(url, {'categoryLimits': {'cat-food': 0}}, format='json')
+        self.assertEqual(response.json()['categoryLimits'], {'cat-travel': 4500.5})
+
+    def test_patch_validation(self):
+        url = reverse('budgets')
+
+        response = self.client.patch(url, {'monthlyLimit': -1}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+        response = self.client.patch(url, {'categoryLimits': {'cat-missing': 100}}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_deleting_a_category_removes_its_budget(self):
+        self.client.patch(reverse('budgets'), {'categoryLimits': {'cat-food': 6000}}, format='json')
+        self.client.delete(reverse('category-detail', args=['cat-food']))
+
+        self.assertEqual(self.client.get(reverse('budgets')).json()['categoryLimits'], {})
 
 
-class DashboardTests(TestCase):
-    def test_dashboard_calculations(self):
-        today = timezone.localdate()
-        last_month = today.replace(day=1) - timedelta(days=1)
-        make_expense(title='This month A', amount=Decimal('100'), category='Food', date=today)
-        make_expense(title='This month B', amount=Decimal('50.50'), category='Bills', date=today)
-        make_expense(title='Last month', amount=Decimal('1000'), category='Food', date=last_month)
+class AppDataApiTests(APITestCase):
+    def test_get_returns_everything(self):
+        make_transaction()
+        data = self.client.get(reverse('app_data')).json()
 
-        response = self.client.get(reverse('dashboard'))
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.context['total_amount'], Decimal('1150.50'))
-        self.assertEqual(response.context['expense_count'], 3)
-        self.assertEqual(response.context['month_total'], Decimal('150.50'))
+        self.assertEqual(set(data), {'transactions', 'categories', 'budgets'})
+        self.assertEqual(len(data['transactions']), 1)
+        self.assertEqual(len(data['categories']), len(DEFAULT_CATEGORIES))
 
-        summary = {item['value']: item['total'] for item in response.context['category_summary']}
-        self.assertEqual(summary, {'Food': Decimal('1100'), 'Bills': Decimal('50.50')})
-        self.assertContains(response, '₹1,150.50')
+    def test_delete_clears_everything_and_restores_default_categories(self):
+        make_transaction()
+        Category.objects.create(name='Rent', type='expense', budget_limit=Decimal('500'))
+        Category.objects.filter(pk='cat-food').update(name='Meals')
+        self.client.patch(reverse('budgets'), {'monthlyLimit': 40000}, format='json')
 
-    def test_empty_dashboard(self):
-        response = self.client.get(reverse('dashboard'))
-        self.assertEqual(response.context['total_amount'], Decimal('0'))
-        self.assertContains(response, 'No expenses yet.')
+        data = self.client.delete(reverse('app_data')).json()
+
+        self.assertEqual(data['transactions'], [])
+        self.assertEqual(data['budgets'], {'monthlyLimit': 0, 'categoryLimits': {}})
+        self.assertEqual(
+            [(row['id'], row['name'], row['type']) for row in data['categories']],
+            DEFAULT_CATEGORIES,
+        )
+
+    def test_sample_data(self):
+        make_transaction(description='Replaced by the samples')
+        # A renamed default category keeps its id, so "Food" must come back under a new one.
+        Category.objects.filter(pk='cat-food').update(name='Meals')
+
+        response = self.client.post(reverse('sample_data'))
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.json()
+        today = timezone.localdate().isoformat()
+        self.assertGreater(len(data['transactions']), 60)
+        self.assertFalse(any(row['description'] == 'Replaced by the samples' for row in data['transactions']))
+        self.assertTrue(all(row['date'] <= today for row in data['transactions']))
+
+        names = [row['name'] for row in data['categories']]
+        self.assertIn('Meals', names)
+        self.assertIn('Food', names)
+        food_id = Category.objects.get(name='Food').pk
+        self.assertEqual(data['budgets']['monthlyLimit'], 40000)
+        self.assertEqual(data['budgets']['categoryLimits'][food_id], 6000)
+        self.assertEqual(len(data['budgets']['categoryLimits']), 4)
+
+    def test_seed_command(self):
+        call_command('seed_expenses', stdout=StringIO())
+
+        self.assertTrue(Transaction.objects.exists())
+        self.assertEqual(Budget.load().monthly_limit, Decimal('40000'))
+
+
+class RecentMonthsTests(APITestCase):
+    def test_wraps_around_the_year(self):
+        self.assertEqual(
+            get_recent_months(3, date(2026, 1, 15)),
+            [(2025, 11), (2025, 12), (2026, 1)],
+        )
